@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: medical_ops_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: medical_ops_web
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/app_db
+      APP_SECRET: change-this-in-production
+      ENVIRONMENT: production
+      ENFORCE_HTTPS: "true"
+      ENABLE_RUNTIME_SCHEMA_PATCH: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: ["sh", "pure_backend/start.sh"]
+
+volumes:
+  postgres_data:

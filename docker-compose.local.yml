@@ -1,0 +1,5 @@
+services:
+  web:
+    environment:
+      ENFORCE_HTTPS: "false"
+      ENABLE_RUNTIME_SCHEMA_PATCH: "true"
