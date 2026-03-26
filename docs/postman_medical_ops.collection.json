@@ -1,0 +1,606 @@
+{
+  "info": {
+    "name": "Medical Ops API - Plug and Play (Ordered)",
+    "description": "Run folders and requests in numeric order for a clean recording. Collection auto-generates unique users/orgs and auto-saves tokens/ids.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000" },
+    { "key": "runId", "value": "" },
+    { "key": "password", "value": "abc12345" },
+
+    { "key": "mainOrgName", "value": "" },
+    { "key": "mainOrgCode", "value": "" },
+    { "key": "mainOrgId", "value": "" },
+    { "key": "mainAdminUsername", "value": "" },
+    { "key": "mainAdminToken", "value": "" },
+    { "key": "mainGeneralUsername", "value": "" },
+    { "key": "mainGeneralUserId", "value": "" },
+    { "key": "mainGeneralToken", "value": "" },
+
+    { "key": "outsiderOrgName", "value": "" },
+    { "key": "outsiderOrgCode", "value": "" },
+    { "key": "outsiderOrgId", "value": "" },
+    { "key": "outsiderUsername", "value": "" },
+    { "key": "outsiderToken", "value": "" },
+
+    { "key": "reviewOrgName", "value": "" },
+    { "key": "reviewOrgCode", "value": "" },
+    { "key": "reviewOrgId", "value": "" },
+    { "key": "reviewerUsername", "value": "" },
+    { "key": "reviewerUserId", "value": "" },
+    { "key": "reviewerToken", "value": "" },
+    { "key": "reviewOrgGeneralUsername", "value": "" },
+    { "key": "reviewOrgGeneralToken", "value": "" },
+
+    { "key": "mainResourceWorkflowId", "value": "" },
+    { "key": "mainCreditWorkflowId", "value": "" },
+    { "key": "reviewOrgWorkflowId", "value": "" },
+    { "key": "reviewOrgAssignmentId", "value": "" },
+
+    { "key": "mainFileId", "value": "" },
+    { "key": "mainExportTaskId", "value": "" },
+    { "key": "mainRecoveryToken", "value": "" },
+    { "key": "backupTaskId", "value": "1" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.collectionVariables.get('runId')) {",
+          "  const id = Date.now().toString().slice(-8);",
+          "  pm.collectionVariables.set('runId', id);",
+          "  pm.collectionVariables.set('mainOrgName', `MainOrg_${id}`);",
+          "  pm.collectionVariables.set('mainOrgCode', `M${id}`);",
+          "  pm.collectionVariables.set('mainAdminUsername', `main_admin_${id}`);",
+          "  pm.collectionVariables.set('mainGeneralUsername', `main_general_${id}`);",
+          "  pm.collectionVariables.set('outsiderOrgName', `OutOrg_${id}`);",
+          "  pm.collectionVariables.set('outsiderOrgCode', `O${id}`);",
+          "  pm.collectionVariables.set('outsiderUsername', `outsider_${id}`);",
+          "  pm.collectionVariables.set('reviewOrgName', `RevOrg_${id}`);",
+          "  pm.collectionVariables.set('reviewOrgCode', `R${id}`);",
+          "  pm.collectionVariables.set('reviewerUsername', `reviewer_${id}`);",
+          "  pm.collectionVariables.set('reviewOrgGeneralUsername', `rev_general_${id}`);",
+          "}",
+          "if (!pm.request.headers.has('X-Forwarded-Proto')) {",
+          "  pm.request.headers.add({ key: 'X-Forwarded-Proto', value: 'https' });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health",
+      "item": [
+        {
+          "name": "00.1 GET /health -> then 01.1",
+          "request": { "method": "GET", "url": "{{baseUrl}}/health" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('health ok', () => pm.response.to.have.status(200));"] } }]
+        }
+      ]
+    },
+    {
+      "name": "01 - Bootstrap Main Org + Users",
+      "item": [
+        {
+          "name": "01.1 Register Main Admin (creates main org) -> then 01.2",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{mainAdminUsername}}\",\n  \"password\": \"{{password}}\",\n  \"id_number\": \"ID-{{mainAdminUsername}}\",\n  \"contact\": \"09001111\",\n  \"organization_name\": \"{{mainOrgName}}\",\n  \"organization_code\": \"{{mainOrgCode}}\",\n  \"role\": \"administrator\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); const j=pm.response.json(); pm.collectionVariables.set('mainOrgId', j.organization_id);"] } }]
+        },
+        {
+          "name": "01.2 Login Main Admin -> then 01.3",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/login",
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{mainAdminUsername}}\",\n  \"password\": \"{{password}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('mainAdminToken', pm.response.json().access_token);"] } }]
+        },
+        {
+          "name": "01.3 Register Main General (existing org, allowed) -> then 01.4",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{mainGeneralUsername}}\",\n  \"password\": \"{{password}}\",\n  \"id_number\": \"ID-{{mainGeneralUsername}}\",\n  \"contact\": \"09002222\",\n  \"organization_name\": \"{{mainOrgName}}\",\n  \"organization_code\": \"{{mainOrgCode}}\",\n  \"role\": \"general\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('mainGeneralUserId', pm.response.json().user_id);"] } }]
+        },
+        {
+          "name": "01.4 Login Main General -> then 01.5",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/login",
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{mainGeneralUsername}}\",\n  \"password\": \"{{password}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('mainGeneralToken', pm.response.json().access_token);"] } }]
+        },
+        {
+          "name": "01.5 Password Recovery Request (main general) -> then 01.6",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/password-recovery/request",
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{mainGeneralUsername}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); const j=pm.response.json(); if (j.recovery_token) pm.collectionVariables.set('mainRecoveryToken', j.recovery_token);"] } }]
+        },
+        {
+          "name": "01.6 Register Outsider Admin (separate org for isolation tests) -> then 01.7",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{outsiderUsername}}\",\n  \"password\": \"{{password}}\",\n  \"id_number\": \"ID-{{outsiderUsername}}\",\n  \"contact\": \"09003333\",\n  \"organization_name\": \"{{outsiderOrgName}}\",\n  \"organization_code\": \"{{outsiderOrgCode}}\",\n  \"role\": \"administrator\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('outsiderOrgId', pm.response.json().organization_id);"] } }]
+        },
+        {
+          "name": "01.7 Login Outsider -> then 02.1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/login",
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{outsiderUsername}}\",\n  \"password\": \"{{password}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('outsiderToken', pm.response.json().access_token);"] } }]
+        }
+      ]
+    },
+    {
+      "name": "02 - Main Org Workflow E2E",
+      "item": [
+        {
+          "name": "02.1 Create Resource Workflow -> then 02.2",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"business_number\": \"RES-{{runId}}\",\n  \"workflow_code\": \"RESOURCE_APPLICATION\",\n  \"payload\": {\"resource\": \"CT_ROOM\"},\n  \"idempotency_key\": \"res-{{runId}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); const j=pm.response.json(); pm.collectionVariables.set('mainResourceWorkflowId', j.workflow_instance_id);"] } }]
+        },
+        {
+          "name": "02.2 Create Reminder -> then 02.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows/{{mainResourceWorkflowId}}/reminder",
+            "body": { "mode": "raw", "raw": "{\n  \"before_minutes\": 60\n}" }
+          }
+        },
+        {
+          "name": "02.3 Approve Resource Workflow -> then 02.4",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows/{{mainResourceWorkflowId}}/decision",
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"APPROVE\",\n  \"comment\": \"approved\"\n}" }
+          }
+        },
+        {
+          "name": "02.4 Allocate Resource Workflow -> then 02.5",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows/{{mainResourceWorkflowId}}/allocate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allocate_to_user_id\": \"{{mainGeneralUserId}}\",\n  \"department\": \"ops\",\n  \"note\": \"allocate after approve\"\n}"
+            }
+          }
+        },
+        {
+          "name": "02.5 Create Credit Workflow (LOW_RISK) -> then 02.6",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"business_number\": \"CR-{{runId}}\",\n  \"workflow_code\": \"CREDIT_CHANGE\",\n  \"payload\": {\"amount\": 100, \"reason\": \"top up\", \"risk_level\": \"LOW_RISK\"},\n  \"idempotency_key\": \"cr-{{runId}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('mainCreditWorkflowId', pm.response.json().workflow_instance_id);"] } }]
+        },
+        {
+          "name": "02.6 Approve Credit Workflow -> then 02.7",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows/{{mainCreditWorkflowId}}/decision",
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"APPROVE\",\n  \"comment\": \"credit approve\"\n}" }
+          }
+        },
+        {
+          "name": "02.7 Idempotent Re-submit (same business_number) -> then 02.8",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"business_number\": \"CR-{{runId}}\",\n  \"workflow_code\": \"CREDIT_CHANGE\",\n  \"payload\": {\"amount\": 100, \"reason\": \"top up\", \"risk_level\": \"LOW_RISK\"},\n  \"idempotency_key\": \"cr2-{{runId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "02.8 Get Credit Ledger -> then 03.1",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }],
+            "url": "{{baseUrl}}/organizations/{{mainOrgId}}/credit-ledger"
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Reviewer Claim Flow (separate org, fully working)",
+      "item": [
+        {
+          "name": "03.1 Register Reviewer Bootstrap (creates review org) -> then 03.2",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{reviewerUsername}}\",\n  \"password\": \"{{password}}\",\n  \"id_number\": \"ID-{{reviewerUsername}}\",\n  \"contact\": \"09004444\",\n  \"organization_name\": \"{{reviewOrgName}}\",\n  \"organization_code\": \"{{reviewOrgCode}}\",\n  \"role\": \"reviewer\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); const j=pm.response.json(); pm.collectionVariables.set('reviewerUserId', j.user_id); pm.collectionVariables.set('reviewOrgId', j.organization_id);"] } }]
+        },
+        {
+          "name": "03.2 Login Reviewer -> then 03.3",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/login",
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{reviewerUsername}}\",\n  \"password\": \"{{password}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('reviewerToken', pm.response.json().access_token);"] } }]
+        },
+        {
+          "name": "03.3 Register General in Review Org -> then 03.4",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{reviewOrgGeneralUsername}}\",\n  \"password\": \"{{password}}\",\n  \"id_number\": \"ID-{{reviewOrgGeneralUsername}}\",\n  \"contact\": \"09005555\",\n  \"organization_name\": \"{{reviewOrgName}}\",\n  \"organization_code\": \"{{reviewOrgCode}}\",\n  \"role\": \"general\"\n}"
+            }
+          }
+        },
+        {
+          "name": "03.4 Login Review Org General -> then 03.5",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/auth/login",
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{reviewOrgGeneralUsername}}\",\n  \"password\": \"{{password}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('reviewOrgGeneralToken', pm.response.json().access_token);"] } }]
+        },
+        {
+          "name": "03.5 General Creates Workflow in Review Org -> then 03.6",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{reviewOrgGeneralToken}}" },
+              { "key": "X-Org-ID", "value": "{{reviewOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"business_number\": \"RV-{{runId}}\",\n  \"workflow_code\": \"RESOURCE_APPLICATION\",\n  \"payload\": {},\n  \"idempotency_key\": \"rv-{{runId}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('reviewOrgWorkflowId', pm.response.json().workflow_instance_id);"] } }]
+        },
+        {
+          "name": "03.6 Reviewer Assigns Task to Self -> then 03.7",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{reviewerToken}}" },
+              { "key": "X-Org-ID", "value": "{{reviewOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows/{{reviewOrgWorkflowId}}/assign",
+            "body": { "mode": "raw", "raw": "{\n  \"assign_to_user_id\": \"{{reviewerUserId}}\",\n  \"note\": \"self assign\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('reviewOrgAssignmentId', pm.response.json().assignment_id);"] } }]
+        },
+        {
+          "name": "03.7 Reviewer Claims Task -> then 03.8",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{reviewerToken}}" },
+              { "key": "X-Org-ID", "value": "{{reviewOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/tasks/{{reviewOrgAssignmentId}}/claim",
+            "body": { "mode": "raw", "raw": "{\n  \"note\": \"claimed\"\n}" }
+          }
+        },
+        {
+          "name": "03.8 Reviewer Approves Workflow -> then 04.1",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{reviewerToken}}" },
+              { "key": "X-Org-ID", "value": "{{reviewOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows/{{reviewOrgWorkflowId}}/decision",
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"APPROVE\",\n  \"comment\": \"done\"\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Metrics & Operations (Main Org)",
+      "item": [
+        {
+          "name": "04.1 Metrics Ingest -> then 04.2",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/metrics/ingest",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\"metric_type\": \"attendance\", \"metric_value\": 8, \"source_key\": \"att-{{runId}}\", \"recorded_at\": \"2026-03-24T10:00:00\", \"appointment_id\": \"AP-1\", \"patient_id\": \"PT-1\", \"doctor_id\": \"DR-1\", \"activity_type\": \"follow_up\", \"message_reach\": 70},\n    {\"metric_type\": \"work_order_sla\", \"metric_value\": 88, \"source_key\": \"wosla-{{runId}}\", \"recorded_at\": \"2026-03-24T11:00:00\", \"appointment_id\": \"WO-1\"}\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "04.2 Metrics Import Batch (mixed) -> then 04.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/metrics/import-batch",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\"metric_type\": \"attendance\", \"metric_value\": 9, \"source_key\": \"ok-{{runId}}\", \"recorded_at\": \"2026-03-24T12:00:00\"},\n    {\"metric_type\": \"attendance\", \"metric_value\": 99, \"source_key\": \"bad-{{runId}}\", \"recorded_at\": \"2026-03-24T12:05:00\"}\n  ]\n}"
+            }
+          }
+        },
+        { "name": "04.3 Operations Dashboard -> then 04.4", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/operations/dashboard" } },
+        { "name": "04.4 Operations Search -> then 04.5", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/operations/search?metric_type=attendance&appointment_id=AP-1&patient_id=PT-1&doctor_id=DR-1&activity_type=follow_up&min_message_reach=60&page=1&page_size=20" } },
+        { "name": "04.5 Operations Report -> then 04.6", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/operations/report" } },
+        { "name": "04.6 Attendance Anomalies -> then 04.7", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/operations/anomalies/attendance?threshold_hours=7" } },
+        { "name": "04.7 Work-Order SLA -> then 05.1", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/operations/work-orders/sla" } }
+      ]
+    },
+    {
+      "name": "05 - Files & Export (Main Org)",
+      "item": [
+        {
+          "name": "05.1 Upload File (choose local csv/json <=20MB) -> then 05.2",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" },
+              { "key": "X-Business-Type", "value": "WORKFLOW" },
+              { "key": "X-Business-ID", "value": "WF-100" }
+            ],
+            "url": "{{baseUrl}}/files/upload",
+            "body": { "mode": "formdata", "formdata": [{ "key": "file", "type": "file", "src": [] }] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); const j=pm.response.json(); if (j.file_id) pm.collectionVariables.set('mainFileId', j.file_id);"] } }]
+        },
+        {
+          "name": "05.2 Get File Metadata -> then 05.3",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/files/{{mainFileId}}?business_type=WORKFLOW&business_id=WF-100"
+          }
+        },
+        {
+          "name": "05.3 General tries Export Create (expect 403) -> then 05.4",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainGeneralToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/export/tasks",
+            "body": { "mode": "raw", "raw": "{\n  \"fields\": [\"username\", \"id_number\"]\n}" }
+          }
+        },
+        {
+          "name": "05.4 Admin creates Export Task -> then 05.5",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/export/tasks",
+            "body": { "mode": "raw", "raw": "{\n  \"fields\": [\"username\", \"id_number\", \"contact\", \"organization_name\", \"credit_balance\"]\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.response.to.have.status(200); pm.collectionVariables.set('mainExportTaskId', pm.response.json().task_id);"] } }]
+        },
+        {
+          "name": "05.5 Get Export Task -> then 05.6",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/export/tasks/{{mainExportTaskId}}"
+          }
+        },
+        {
+          "name": "05.6 Export Domain -> then 06.1",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/export/domain"
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Governance (Main Org)",
+      "item": [
+        { "name": "06.1 Governance Policy -> then 06.2", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/policy" } },
+        { "name": "06.2 Backup -> then 06.3", "request": { "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/backup" } },
+        { "name": "06.3 Archive -> then 06.4", "request": { "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/archive" } },
+        { "name": "06.4 Retention Run -> then 06.5", "request": { "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/retention/run" } },
+        {
+          "name": "06.5 Scheduler Fail 1 -> then 06.6",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/scheduler/nightly-sync/run", "body": { "mode": "raw", "raw": "{\n  \"should_fail\": true\n}" } }
+        },
+        {
+          "name": "06.6 Scheduler Fail 2 -> then 06.7",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/scheduler/nightly-sync/run", "body": { "mode": "raw", "raw": "{\n  \"should_fail\": true\n}" } }
+        },
+        {
+          "name": "06.7 Scheduler Fail 3 -> then 06.8",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/scheduler/nightly-sync/run", "body": { "mode": "raw", "raw": "{\n  \"should_fail\": true\n}" } }
+        },
+        {
+          "name": "06.8 Scheduler Fail 4 (expect 409) -> then 06.9",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/scheduler/nightly-sync/run", "body": { "mode": "raw", "raw": "{\n  \"should_fail\": true\n}" } }
+        },
+        {
+          "name": "06.9 Scheduler Recover Success -> then 06.10",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/scheduler/nightly-sync/run", "body": { "mode": "raw", "raw": "{\n  \"should_fail\": false\n}" } }
+        },
+        { "name": "06.10 Data Lineage -> then 06.11", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/lineage" } },
+        { "name": "06.11 Data Dictionary -> then 06.12", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/dictionary" } },
+        { "name": "06.12 Audit Integrity -> then 07.1", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{mainAdminToken}}" }, { "key": "X-Org-ID", "value": "{{mainOrgId}}" }], "url": "{{baseUrl}}/governance/audit/integrity" } }
+      ]
+    },
+    {
+      "name": "07 - Security / Isolation Negative Checks",
+      "item": [
+        {
+          "name": "07.1 Outsider tries to decide Main Workflow (expect 404) -> then 07.2",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{outsiderToken}}" },
+              { "key": "X-Org-ID", "value": "{{outsiderOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/workflows/{{mainResourceWorkflowId}}/decision",
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"APPROVE\",\n  \"comment\": \"cross tenant\"\n}" }
+          }
+        },
+        {
+          "name": "07.2 Outsider reads Main File (expect 404) -> then 08.1",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{outsiderToken}}" },
+              { "key": "X-Org-ID", "value": "{{outsiderOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/files/{{mainFileId}}?business_type=WORKFLOW&business_id=WF-100"
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 - Rollback + Logout",
+      "item": [
+        {
+          "name": "08.1 Rollback Main Workflow to Version 1 -> then 08.2",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{mainAdminToken}}" },
+              { "key": "X-Org-ID", "value": "{{mainOrgId}}" }
+            ],
+            "url": "{{baseUrl}}/versioning/rollback/WorkflowInstance/{{mainResourceWorkflowId}}/1"
+          }
+        },
+        {
+          "name": "08.2 Logout Main General (end)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{mainGeneralToken}}" }
+            ],
+            "url": "{{baseUrl}}/auth/logout",
+            "body": { "mode": "raw", "raw": "{\n  \"token\": \"{{mainGeneralToken}}\"\n}" }
+          }
+        }
+      ]
+    }
+  ]
+}

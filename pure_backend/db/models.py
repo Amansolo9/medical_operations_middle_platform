@@ -258,6 +258,7 @@ class BackupArchiveTask(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True, default="")
     task_type: Mapped[str] = mapped_column(String(30), index=True)
     status: Mapped[str] = mapped_column(String(30), index=True)
     detail: Mapped[str] = mapped_column(Text, default="")

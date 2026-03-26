@@ -6,3 +6,7 @@ __pycache__/
 .env
 app/
 tests/
+convert_ai_session.py
+*db
+.tmp
+NUL

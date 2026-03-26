@@ -1,0 +1,11 @@
+{
+  "id": "f1f2d1e8-83cb-4d2d-9f37-7c1b4f6f8b90",
+  "name": "Medical Ops Local",
+  "values": [
+    { "key": "baseUrl", "value": "http://localhost:8000", "enabled": true },
+    { "key": "backupTaskId", "value": "1", "enabled": true }
+  ],
+  "_postman_variable_scope": "environment",
+  "_postman_exported_at": "2026-03-26T00:00:00.000Z",
+  "_postman_exported_using": "OpenCode"
+}

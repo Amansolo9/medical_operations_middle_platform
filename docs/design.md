@@ -31,7 +31,9 @@ This platform implements a FastAPI-based middle layer for medical operations and
    - Batch import writeback (`ImportBatch`, `ImportBatchDetail`).
    - Export governance with whitelist fields + desensitization + `ExportTask` trace records.
    - Data lineage/dictionary endpoints and governance tasks for backup/archive.
-   - Scheduler retry policy enforced at maximum 3 retries.
+   - Backup/archive writes artifact files and SHA-256 checksum metadata, with verification endpoint.
+   - Governance policy metadata explicitly models daily backup schedule (`00:00` UTC), 30-day retention, and manual execution mode.
+   - Scheduler retry policy remains enforced at maximum 3 retries.
    - File upload controls: max 20MB, content-type whitelist, SHA-256 dedup.
    - `AuditLog` captures immutable event trail.
 
@@ -55,7 +57,9 @@ Core entities store `version_id` and are snapshotted in `EntitySnapshot`. Rollba
 ## Security & Compliance
 
 - Sensitive user fields are encrypted by AES-GCM with `APP_SECRET`.
-- HTTPS policy middleware enforces secure transport in production (`ENFORCE_HTTPS=true`).
-- Local demo can run HTTP by overriding env (`ENFORCE_HTTPS=false`) before startup.
+- HTTPS policy middleware is safe-by-default for all non-test environments: plain HTTP is rejected unless trusted proxy header `X-Forwarded-Proto=https` is present.
+- Test environment (`ENVIRONMENT=test`) intentionally allows HTTP for local `TestClient` execution.
 - Audit logs use a chained hash (`previous_hash` -> `current_hash`) for tamper-evident history.
-- Additional hardening recommendation: restrict DB account to append-only writes for `audit_logs` using database roles/triggers.
+- Audit logs also enforce append-only behavior via DB triggers created at bootstrap.
+- Existing-organization self-registration is restricted to `general`; privileged roles require controlled onboarding.
+- Unhandled exceptions are logged with structured fields and sanitized messages, while API responses keep generic 500 payloads.

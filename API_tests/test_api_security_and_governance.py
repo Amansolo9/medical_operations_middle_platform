@@ -1,4 +1,7 @@
 import os
+import logging
+import threading
+from datetime import timedelta
 from io import BytesIO
 
 os.environ["DATABASE_URL"] = "sqlite:///./api_test.db"
@@ -25,7 +28,25 @@ def fresh_database():
             pass
 
 
-def register_user(client: TestClient, username: str, org: str, role: str = "general", code: str | None = None):
+def _promote_membership_role(username: str, organization_code: str, role_name: str) -> None:
+    from sqlalchemy import select
+
+    from pure_backend.db.models import OrgMembership, Organization, Role, User
+    from pure_backend.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        user = db.scalar(select(User).where(User.username == username))
+        org = db.scalar(select(Organization).where(Organization.code == organization_code))
+        role = db.scalar(select(Role).where(Role.name == role_name))
+        membership = db.scalar(select(OrgMembership).where(OrgMembership.user_id == user.id, OrgMembership.organization_id == org.id))
+        membership.role_id = role.id
+        db.commit()
+    finally:
+        db.close()
+
+
+def register_user(client: TestClient, username: str, org: str, role: str = "general", code: str | None = None, headers: dict | None = None):
     payload = {
         "username": username,
         "password": "abc12345",
@@ -36,13 +57,30 @@ def register_user(client: TestClient, username: str, org: str, role: str = "gene
     }
     if code:
         payload["organization_code"] = code
-    response = client.post("/auth/register", json=payload)
+    response = client.post("/auth/register", json=payload, headers=headers)
+    if response.status_code == 200:
+        return response.json()
+
+    response_payload = response.json()
+    if (
+        response.status_code == 403
+        and role != "general"
+        and code
+        and response_payload.get("msg") == "Privileged roles for existing organizations require controlled onboarding"
+    ):
+        general_payload = dict(payload)
+        general_payload["role"] = "general"
+        general_response = client.post("/auth/register", json=general_payload, headers=headers)
+        assert general_response.status_code == 200
+        _promote_membership_role(username, code, role)
+        return general_response.json()
+
     assert response.status_code == 200
-    return response.json()
+    return response_payload
 
 
-def login_user(client: TestClient, username: str, password: str = "abc12345") -> str:
-    response = client.post("/auth/login", json={"username": username, "password": password})
+def login_user(client: TestClient, username: str, password: str = "abc12345", headers: dict | None = None) -> str:
+    response = client.post("/auth/login", json={"username": username, "password": password}, headers=headers)
     assert response.status_code == 200
     return response.json()["access_token"]
 
@@ -91,9 +129,10 @@ def test_password_recovery_token_hidden_outside_test_env():
     previous = main_module.settings.environment
     try:
         main_module.settings.environment = "production"
+        secure_proxy = {"X-Forwarded-Proto": "https"}
         with TestClient(app) as client:
-            register_user(client, "recover_hidden", "OrgRecoverHidden", "general", code="ORGRECH")
-            req = client.post("/auth/password-recovery/request", json={"username": "recover_hidden"})
+            register_user(client, "recover_hidden", "OrgRecoverHidden", "general", code="ORGRECH", headers=secure_proxy)
+            req = client.post("/auth/password-recovery/request", headers=secure_proxy, json={"username": "recover_hidden"})
             assert req.status_code == 200
             assert req.json()["recovery_token"] is None
     finally:
@@ -170,7 +209,7 @@ def test_register_into_existing_org_with_valid_code_allows_general():
         assert ok_general.status_code == 200
 
 
-def test_register_privileged_role_requires_matching_org_code():
+def test_register_privileged_role_into_existing_org_is_blocked_even_with_valid_code():
     with TestClient(app) as client:
         register_user(client, "seed_admin2", "VictimOrg2", "administrator", code="VIC002")
 
@@ -188,7 +227,7 @@ def test_register_privileged_role_requires_matching_org_code():
         )
         assert wrong_code.status_code == 403
 
-        correct_code = client.post(
+        blocked_even_with_code = client.post(
             "/auth/register",
             json={
                 "username": "attacker_with_code",
@@ -200,7 +239,7 @@ def test_register_privileged_role_requires_matching_org_code():
                 "role": "administrator",
             },
         )
-        assert correct_code.status_code == 200
+        assert blocked_even_with_code.status_code == 403
 
 
 def test_logout_cannot_delete_another_user_token():
@@ -456,6 +495,25 @@ def test_permission_policy_for_export_is_enforced():
         assert response.status_code == 403
 
 
+def test_workflow_create_permission_is_enforced():
+    with TestClient(app) as client:
+        admin = register_user(client, "wf_perm_admin", "OrgWfPerm", "administrator", code="ORGWFP")
+        reviewer = register_user(client, "wf_perm_reviewer", "OrgWfPerm", "reviewer", code="ORGWFP")
+        reviewer_token = login_user(client, "wf_perm_reviewer")
+
+        denied = client.post(
+            "/workflows",
+            headers=auth_headers(reviewer_token, admin["organization_id"]),
+            json={
+                "business_number": "WFP-1",
+                "workflow_code": "RESOURCE_APPLICATION",
+                "payload": {},
+                "idempotency_key": "wfp-1",
+            },
+        )
+        assert denied.status_code == 403
+
+
 def test_metrics_batch_and_operations_search_report():
     with TestClient(app) as client:
         user = register_user(client, "ops_user", "OrgOps", "administrator", code="ORGOPS")
@@ -494,6 +552,19 @@ def test_metrics_batch_and_operations_search_report():
         )
         assert imported.status_code == 200
         assert imported.json()["success"] == 2
+
+        from pure_backend.db.models import ImportBatchDetail
+        from pure_backend.db.session import SessionLocal
+
+        batch_id = imported.json()["batch_id"]
+        db = SessionLocal()
+        try:
+            details = db.query(ImportBatchDetail).filter(ImportBatchDetail.batch_id == batch_id).all()
+            assert len(details) == 2
+            assert all(row.status == "SUCCESS" for row in details)
+            assert all(row.error_message == "" for row in details)
+        finally:
+            db.close()
 
         dashboard = client.get("/operations/dashboard", headers=headers)
         assert dashboard.status_code == 200
@@ -746,6 +817,38 @@ def test_https_enforcement_when_enabled():
             os.environ["ENFORCE_HTTPS"] = previous_enforce
 
 
+def test_https_allows_http_in_test_environment():
+    from pure_backend import main as main_module
+
+    previous_env = main_module.settings.environment
+    previous_enforce = main_module.settings.enforce_https
+    try:
+        main_module.settings.environment = "test"
+        main_module.settings.enforce_https = True
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.status_code == 200
+    finally:
+        main_module.settings.environment = previous_env
+        main_module.settings.enforce_https = previous_enforce
+
+
+def test_https_toggle_disable_allows_http_in_non_test_environment():
+    from pure_backend import main as main_module
+
+    previous_env = main_module.settings.environment
+    previous_enforce = main_module.settings.enforce_https
+    try:
+        main_module.settings.environment = "production"
+        main_module.settings.enforce_https = False
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.status_code == 200
+    finally:
+        main_module.settings.environment = previous_env
+        main_module.settings.enforce_https = previous_enforce
+
+
 def test_idempotency_key_outside_24h_window_creates_new_instance():
     with TestClient(app) as client:
         admin = register_user(client, "idemp_admin", "OrgIdemp", "administrator", code="ORGIDP")
@@ -766,7 +869,7 @@ def test_idempotency_key_outside_24h_window_creates_new_instance():
 
         from pure_backend.db.models import IdempotencyKey
         from pure_backend.db.session import SessionLocal
-        from pure_backend.main import now_utc, timedelta
+        from pure_backend.deps import now_utc
 
         db = SessionLocal()
         try:
@@ -797,7 +900,7 @@ def test_token_expiry_blocks_access():
 
         from pure_backend.db.models import SessionToken
         from pure_backend.db.session import SessionLocal
-        from pure_backend.main import now_utc, timedelta
+        from pure_backend.deps import now_utc
 
         db = SessionLocal()
         try:
@@ -835,6 +938,20 @@ def test_scheduler_retry_and_max_retry_limit():
         assert blocked.status_code == 409
 
 
+def test_governance_policy_metadata_is_explicit():
+    with TestClient(app) as client:
+        admin = register_user(client, "policy_admin", "OrgPolicy", "administrator", code="ORGPOL")
+        token = login_user(client, "policy_admin")
+        policy = client.get("/governance/policy", headers=auth_headers(token, admin["organization_id"]))
+        assert policy.status_code == 200
+        payload = policy.json()
+        assert payload["backup"]["frequency"] == "daily"
+        assert payload["backup"]["retention_days"] == 30
+        assert payload["backup"]["execution_mode"] == "manual_endpoint"
+        assert payload["scheduler"]["max_retries"] == 3
+        assert payload["scheduler"]["retry_compensation"] is True
+
+
 def test_backup_archive_and_retention_policy_enforcement():
     with TestClient(app) as client:
         admin = register_user(client, "ret_admin", "OrgRet", "administrator", code="ORGRET")
@@ -849,7 +966,20 @@ def test_backup_archive_and_retention_policy_enforcement():
 
         from pure_backend.db.models import BackupArchiveTask
         from pure_backend.db.session import SessionLocal
-        from pure_backend.main import now_utc, timedelta
+        from pure_backend.deps import now_utc
+
+        db = SessionLocal()
+        try:
+            btask = db.query(BackupArchiveTask).filter(BackupArchiveTask.task_type == "BACKUP").order_by(BackupArchiveTask.id.desc()).first()
+            atask = db.query(BackupArchiveTask).filter(BackupArchiveTask.task_type == "ARCHIVE").order_by(BackupArchiveTask.id.desc()).first()
+            backup_verify = client.get(f"/governance/backup/{btask.id}/verify", headers=headers)
+            archive_verify = client.get(f"/governance/backup/{atask.id}/verify", headers=headers)
+            assert backup_verify.status_code == 200
+            assert archive_verify.status_code == 200
+            assert backup_verify.json()["verified"] is True
+            assert archive_verify.json()["verified"] is True
+        finally:
+            db.close()
 
         db = SessionLocal()
         try:
@@ -871,6 +1001,117 @@ def test_backup_archive_and_retention_policy_enforcement():
         recover = client.post("/governance/scheduler/nightly-sync/run", headers=headers, json={"should_fail": False})
         assert recover.status_code == 200
         assert recover.json()["status"] == "SUCCESS"
+
+
+def test_backup_verify_is_tenant_scoped():
+    with TestClient(app) as client:
+        owner = register_user(client, "verify_owner", "OrgVerifyA", "administrator", code="ORGVA")
+        outsider = register_user(client, "verify_outsider", "OrgVerifyB", "administrator", code="ORGVB")
+        owner_token = login_user(client, "verify_owner")
+        outsider_token = login_user(client, "verify_outsider")
+
+        backup = client.post("/governance/backup", headers=auth_headers(owner_token, owner["organization_id"]))
+        assert backup.status_code == 200
+
+        from pure_backend.db.models import BackupArchiveTask
+        from pure_backend.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            task = db.query(BackupArchiveTask).filter(BackupArchiveTask.organization_id == owner["organization_id"], BackupArchiveTask.task_type == "BACKUP").order_by(BackupArchiveTask.id.desc()).first()
+            assert task is not None
+            denied = client.get(f"/governance/backup/{task.id}/verify", headers=auth_headers(outsider_token, outsider["organization_id"]))
+            assert denied.status_code == 404
+        finally:
+            db.close()
+
+
+def test_workflow_idempotency_under_concurrent_requests():
+    with TestClient(app) as client:
+        admin = register_user(client, "race_admin", "OrgRace", "administrator", code="ORGRACE")
+        token = login_user(client, "race_admin")
+        headers = auth_headers(token, admin["organization_id"])
+        payload = {
+            "business_number": "RACE-1",
+            "workflow_code": "RESOURCE_APPLICATION",
+            "payload": {},
+            "idempotency_key": "race-1",
+        }
+
+        barrier = threading.Barrier(2)
+        results: list[tuple[int, dict]] = []
+
+        def _send_once() -> None:
+            with TestClient(app) as local_client:
+                barrier.wait()
+                response = local_client.post("/workflows", headers=headers, json=payload)
+                results.append((response.status_code, response.json()))
+
+        t1 = threading.Thread(target=_send_once)
+        t2 = threading.Thread(target=_send_once)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert len(results) == 2
+        assert all(status == 200 for status, _ in results)
+        assert any(body.get("idempotent") is True for _, body in results)
+
+        from pure_backend.db.models import WorkflowInstance
+        from pure_backend.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            count = db.query(WorkflowInstance).filter(WorkflowInstance.organization_id == admin["organization_id"], WorkflowInstance.business_number == "RACE-1").count()
+            assert count == 1
+        finally:
+            db.close()
+
+
+def test_metrics_import_batch_detail_mixed_status_assertions():
+    with TestClient(app) as client:
+        user = register_user(client, "batch_detail_user", "OrgBatchDtl", "administrator", code="ORGBDTL")
+        token = login_user(client, "batch_detail_user")
+        headers = auth_headers(token, user["organization_id"])
+
+        seed = client.post(
+            "/metrics/ingest",
+            headers=headers,
+            json={"items": [{"metric_type": "attendance", "metric_value": 7, "source_key": "bd-dup", "recorded_at": "2026-03-24T09:00:00"}]},
+        )
+        assert seed.status_code == 200
+
+        imported = client.post(
+            "/metrics/import-batch",
+            headers=headers,
+            json={
+                "items": [
+                    {"metric_type": "attendance", "metric_value": 8, "source_key": "bd-ok", "recorded_at": "2026-03-24T10:00:00"},
+                    {"metric_type": "attendance", "metric_value": 9, "source_key": "bd-dup", "recorded_at": "2026-03-24T11:00:00"},
+                    {"metric_type": "attendance", "metric_value": 99, "source_key": "bd-oob", "recorded_at": "2026-03-24T12:00:00"},
+                ]
+            },
+        )
+        assert imported.status_code == 200
+        assert imported.json()["success"] == 1
+        assert imported.json()["failed"] == 2
+
+        from pure_backend.db.models import ImportBatchDetail
+        from pure_backend.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            details = db.query(ImportBatchDetail).filter(ImportBatchDetail.batch_id == imported.json()["batch_id"]).all()
+            assert len(details) == 3
+            success_rows = [row for row in details if row.status == "SUCCESS"]
+            failed_rows = [row for row in details if row.status == "FAILED"]
+            assert len(success_rows) == 1
+            assert len(failed_rows) == 2
+            assert any(row.error_message == "Duplicate source_key in database" for row in failed_rows)
+            assert any(row.error_message == "Out-of-bounds metric_value" for row in failed_rows)
+        finally:
+            db.close()
 
 
 def test_workflow_task_assignment_and_claim_lifecycle():
@@ -992,6 +1233,53 @@ def test_audit_chain_continuity():
         assert integrity.json()["integrity_ok"] is True
 
 
+def test_audit_integrity_is_tenant_scoped():
+    with TestClient(app) as client:
+        org_a = register_user(client, "audit_scope_a", "OrgAuditA", "administrator", code="ORGAUD1")
+        org_b = register_user(client, "audit_scope_b", "OrgAuditB", "administrator", code="ORGAUD2")
+        token_a = login_user(client, "audit_scope_a")
+        token_b = login_user(client, "audit_scope_b")
+
+        for idx in range(3):
+            client.post(
+                "/workflows",
+                headers=auth_headers(token_a, org_a["organization_id"]),
+                json={
+                    "business_number": f"AUDA-{idx}",
+                    "workflow_code": "RESOURCE_APPLICATION",
+                    "payload": {},
+                    "idempotency_key": f"a-{idx}",
+                },
+            )
+
+        before_b = client.get("/governance/audit/integrity", headers=auth_headers(token_b, org_b["organization_id"]))
+        assert before_b.status_code == 200
+        total_before = before_b.json()["total_records"]
+
+        for idx in range(2):
+            client.post(
+                "/workflows",
+                headers=auth_headers(token_a, org_a["organization_id"]),
+                json={
+                    "business_number": f"AUDA-extra-{idx}",
+                    "workflow_code": "RESOURCE_APPLICATION",
+                    "payload": {},
+                    "idempotency_key": f"a-extra-{idx}",
+                },
+            )
+
+        after_b = client.get("/governance/audit/integrity", headers=auth_headers(token_b, org_b["organization_id"]))
+        assert after_b.status_code == 200
+        assert after_b.json()["total_records"] == total_before
+
+
+def test_request_id_header_is_returned():
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"X-Request-ID": "req-123"})
+        assert response.status_code == 200
+        assert response.headers.get("X-Request-ID") == "req-123"
+
+
 def test_audit_logs_append_only_trigger_blocks_update_delete():
     with TestClient(app) as client:
         user = register_user(client, "audit_guard", "OrgAuditGuard", "administrator", code="ORGAG")
@@ -1063,7 +1351,7 @@ def test_lockout_time_window_allows_after_old_failures():
 
         from pure_backend.db.models import LoginAttempt
         from pure_backend.db.session import SessionLocal
-        from pure_backend.main import now_utc, timedelta
+        from pure_backend.deps import now_utc
 
         db = SessionLocal()
         try:
@@ -1075,6 +1363,26 @@ def test_lockout_time_window_allows_after_old_failures():
 
         login = client.post("/auth/login", json={"username": "lock_window", "password": "abc12345"})
         assert login.status_code == 200
+
+
+def test_unhandled_exception_logs_are_sanitized(caplog):
+    from pure_backend import main as main_module
+
+    if not any(getattr(route, "path", "") == "/_test/unhandled-error" for route in main_module.app.router.routes):
+        @main_module.app.get("/_test/unhandled-error")
+        def _raise_unhandled_error_for_test():
+            raise RuntimeError("password=abc12345 token=s3cr3t")
+
+    with caplog.at_level(logging.ERROR, logger="error"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/_test/unhandled-error")
+
+    assert response.status_code == 500
+    assert response.json() == {"code": 500, "msg": "Internal server error"}
+    joined_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "event=unhandled_exception" in joined_logs
+    assert "abc12345" not in joined_logs
+    assert "s3cr3t" not in joined_logs
 
 
 def test_metrics_duplicate_source_key_rejections():

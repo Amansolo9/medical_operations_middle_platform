@@ -2,6 +2,11 @@
 
 Base URL: `http://localhost:8000`
 
+Transport security:
+
+- When `ENVIRONMENT != test`, requests must use HTTPS transport, or include trusted proxy header `X-Forwarded-Proto: https`.
+- Plain HTTP in non-test environments is rejected with `400` and error contract payload.
+
 ## Health
 
 - `GET /health`
@@ -15,6 +20,12 @@ Base URL: `http://localhost:8000`
 - `POST /auth/password-recovery/reset`
 
 Password policy: at least 8 chars, must include letters and numbers.
+
+Registration policy:
+
+- Existing organization registration requires valid `organization_code` and only allows `role=general`.
+- Privileged roles for existing organizations are blocked (`403`) and require controlled onboarding.
+- New organization bootstrap registration remains supported.
 
 ## Organization
 
@@ -81,6 +92,11 @@ Password policy: at least 8 chars, must include letters and numbers.
 - `POST /governance/backup`
 - `POST /governance/archive`
 - `POST /governance/retention/run`
+- `GET /governance/policy`
+  - Returns governance metadata: daily backup schedule (`00:00` UTC), retention days (`30`), and scheduler retry ceiling (`3`).
+  - Clarifies policy metadata vs manual execution endpoints.
+- `GET /governance/backup/{task_id}/verify`
+  - Verifies generated backup/archive artifact checksum
 - `POST /governance/scheduler/{task_name}/run`
   - Retry ceiling: 3 attempts (returns 409 after exceeded)
 - `GET /governance/audit/integrity`
